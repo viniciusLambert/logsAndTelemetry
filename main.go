@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,12 +25,21 @@ func main() {
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir string) int {
-	st, err := store.New(dataDir)
+	file, err := os.OpenFile("linko.access.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create store: %v\n", err)
+		log.Fatalf("failed to load log file")
 		return 1
 	}
-	s := newServer(*st, httpPort, cancel)
+
+	accessLogger := log.New(file, "INFO: ", log.LstdFlags)
+	standardLogger := log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
+
+	st, err := store.New(dataDir, standardLogger)
+	if err != nil {
+		standardLogger.Printf("failed to create store: %v", err)
+		return 1
+	}
+	s := newServer(*st, httpPort, cancel, accessLogger)
 	var serverErr error
 	go func() {
 		serverErr = s.start()
@@ -41,12 +50,13 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	defer cancel()
 
 	if err := s.shutdown(shutdownCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to shutdown server: %v\n", err)
+		standardLogger.Printf("failed to shutdown server: %v\n", err)
 		return 1
 	}
 	if serverErr != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", serverErr)
+		standardLogger.Printf("server error: %v\n", serverErr)
 		return 1
 	}
+	standardLogger.Print("Linko is shutting down\n")
 	return 0
 }
