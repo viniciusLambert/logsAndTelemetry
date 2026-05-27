@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +13,8 @@ import (
 
 	"boot.dev/linko/internal/store"
 )
+
+type closeFunc func() error
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -26,32 +28,21 @@ func main() {
 	os.Exit(status)
 }
 
-func initializeLogger(logFile string) (*log.Logger, error) {
-	var multiWriter io.Writer
-	if logFile == "" {
-		multiWriter = io.MultiWriter(os.Stderr)
-	} else {
-		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load log file")
-		}
-
-		multiWriter = io.MultiWriter(os.Stderr, file)
-	}
-
-	logger := log.New(multiWriter, "", log.LstdFlags)
-	return logger, nil
-}
-
 func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir string) int {
-	logger, err := initializeLogger(os.Getenv("LINKO_LOG_FILE"))
+	logger, closeF, err := initializeLogger(os.Getenv("LINKO_LOG_FILE"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize logger: %d", err)
 		return 1
 	}
+	defer func() {
+		if err := closeF(); err != nil {
+			fmt.Fprintf(os.Stderr, "%d", err)
+		}
+	}()
+
 	st, err := store.New(dataDir, logger)
 	if err != nil {
-		logger.Printf("failed to create store: %v", err)
+		logger.Error(fmt.Sprintf("failed to create store: %v", err))
 		return 1
 	}
 	s := newServer(*st, httpPort, cancel, logger)
@@ -65,13 +56,55 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	defer cancel()
 
 	if err := s.shutdown(shutdownCtx); err != nil {
-		logger.Printf("failed to shutdown server: %v\n", err)
+		logger.Error(fmt.Sprintf("failed to shutdown server: %v\n", err))
 		return 1
 	}
 	if serverErr != nil {
-		logger.Printf("server error: %v\n", serverErr)
+		logger.Error(fmt.Sprintf("server error: %v\n", serverErr))
 		return 1
 	}
-	logger.Print("Linko is shutting down\n")
+	logger.Debug("Linko is shutting down")
 	return 0
+}
+
+func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
+	var closeF closeFunc
+	var logger *slog.Logger
+
+	stdErrLogger := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+
+	if logFile != "" {
+		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load log file")
+		}
+
+		bufferedFile := bufio.NewWriterSize(file, 8192)
+
+		closeF = func() error {
+			if err := bufferedFile.Flush(); err != nil {
+				return fmt.Errorf("failed flush file: %d", err)
+			}
+
+			if err = file.Close(); err != nil {
+				return fmt.Errorf("failed close file: %d", err)
+			}
+			return nil
+		}
+
+		fileLogger := slog.NewTextHandler(bufferedFile, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})
+
+		logger = slog.New(slog.NewMultiHandler(
+			stdErrLogger,
+			fileLogger,
+		))
+	} else {
+		logger = slog.New(stdErrLogger)
+	}
+
+	return logger, closeF, nil
 }
