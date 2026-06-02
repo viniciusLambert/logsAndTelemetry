@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -63,48 +61,6 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 		logger.Error(fmt.Sprintf("server error: %v\n", serverErr))
 		return 1
 	}
-	logger.Debug("Linko is shutting down")
+	logger.Debug("Linko is shutting downn")
 	return 0
-}
-
-func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
-	var closeF closeFunc
-	var logger *slog.Logger
-
-	stdErrLogger := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-
-	if logFile != "" {
-		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load log file")
-		}
-
-		bufferedFile := bufio.NewWriterSize(file, 8192)
-
-		closeF = func() error {
-			if err := bufferedFile.Flush(); err != nil {
-				return fmt.Errorf("failed flush file: %d", err)
-			}
-
-			if err = file.Close(); err != nil {
-				return fmt.Errorf("failed close file: %d", err)
-			}
-			return nil
-		}
-
-		fileLogger := slog.NewTextHandler(bufferedFile, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})
-
-		logger = slog.New(slog.NewMultiHandler(
-			stdErrLogger,
-			fileLogger,
-		))
-	} else {
-		logger = slog.New(stdErrLogger)
-	}
-
-	return logger, closeF, nil
 }
