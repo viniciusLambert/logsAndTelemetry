@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"boot.dev/linko/internal/linkoerr"
 	pkgerr "github.com/pkg/errors"
 )
 
@@ -73,21 +74,44 @@ func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
 	return logger, closeF, nil
 }
 
+type multiError interface {
+	error
+	Unwrap() []error
+}
+
+func errorAttrs(err error) []slog.Attr {
+	attrs := []slog.Attr{{
+		Key:   "message",
+		Value: slog.StringValue(err.Error()),
+	}}
+
+	attrs = append(attrs, linkoerr.Attrs(err)...)
+	if stackErr, ok := errors.AsType[stackTracer](err); ok {
+		attrs = append(attrs, slog.Attr{
+			Key:   "stack_trace",
+			Value: slog.StringValue(fmt.Sprintf("%+v", stackErr.StackTrace())),
+		})
+	}
+	return attrs
+}
+
 func replaceAttr(groups []string, attribute slog.Attr) slog.Attr {
 	if attribute.Key == "error" {
-		err, ok := attribute.Value.Any().(error)
+		err, ok := attribute.Value.Any().(multiError)
 		if !ok {
 			return attribute
 		}
-		if stackErr, ok := errors.AsType[stackTracer](err); ok {
-			return slog.GroupAttrs("error", slog.Attr{
-				Key:   "message",
-				Value: slog.StringValue(stackErr.Error()),
-			}, slog.Attr{
-				Key:   "stack_trace",
-				Value: slog.StringValue(fmt.Sprintf("%+v", stackErr.StackTrace())),
-			})
+
+		if multiErr, ok := errors.AsType[multiError](err); ok {
+			var errAttrs []slog.Attr
+			for i, e := range multiErr.Unwrap() {
+				errAttrs = append(errAttrs, slog.GroupAttrs(fmt.Sprintf("error_%d", i+1), errorAttrs(e)...))
+			}
+
+			return slog.GroupAttrs("errors", errAttrs...)
 		}
+
+		return slog.GroupAttrs("error", errorAttrs(err)...)
 	}
 	return attribute
 }
